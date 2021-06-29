@@ -1,5 +1,7 @@
 #include <stdio.h>
-//#include <unistd.h>
+#ifndef _MSC_VER
+#include <unistd.h>
+#endif
 #include <string>
 #include <vector>
 #include <map>
@@ -18,10 +20,55 @@ struct Parameters
     std::string filename;
 };
 
+struct Coord
+{
+    int32_t x, y;
+};
+
+int GetValidDirs(Coord coord, Coord *dest, int* directions, uint32_t tileXCount, uint32_t tileYCount)
+{
+    int coordCount = 0;
+    if (coord.x < (tileXCount-1))
+    {
+        directions[coordCount] = 0;
+        dest[coordCount++] = {1, 0 };
+    }
+    if (coord.y < (tileYCount - 1))
+    {
+        directions[coordCount] = 1;
+        dest[coordCount++] = { 0, 1 };
+    }
+    if (coord.x > 0)
+    {
+        directions[coordCount] = 2;
+        dest[coordCount++] = { -1, 0 };
+    }
+    if (coord.y > 0)
+    {
+        directions[coordCount] = 3;
+        dest[coordCount++] = {0, -1};
+    }
+    return coordCount;
+}
+
 struct Tile
 {
     std::vector<Color> bitmap;
+    std::vector<bool> compatibility[4]; // +x, +y, -x, -y
     
+    bool HasCompatible(int direction) const
+    {
+        const auto& comp = compatibility[direction];
+        for(size_t i = 0; i < comp.size(); i++)
+        {
+            if (comp[i])
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     uint64_t ComputeChecksum() const
     {
         uint64_t res = 0;
@@ -157,10 +204,62 @@ int main(int argc, char** argv)
     }
     printf("%d x %d source tiles with %d unique tiles\n", int(tileXCount), int(tileYCount), int(tiles.size()));
     
+    /*
     stbi_write_png("tile 0.png", 16, 16, 4, tiles[0].bitmap.data(), 16 * 4);
     stbi_write_png("tile 1.png", 16, 16, 4, tiles[1].bitmap.data(), 16 * 4);
     stbi_write_png("tile 1516.png", 16, 16, 4, tiles[1516].bitmap.data(), 16 * 4);
     stbi_write_png("tile 1517.png", 16, 16, 4, tiles[1517].bitmap.data(), 16 * 4);
+     */
+    // resize compatibility list
+    for (auto& tile : tiles)
+    {
+        for (auto& compatibility : tile.compatibility)
+        {
+            compatibility.resize(tiles.size(), false);
+        }
+    }
+    // build compatibility
+    for (size_t ty = 0; ty < tileYCount; ty++)
+    {
+        for (size_t tx = 0; tx < tileXCount; tx++)
+        {
+            TileIndex tileIndex = tileMap[ty * tileXCount + tx];
+            if (tileIndex == TileMask)
+            {
+                continue;
+            }
+            Coord coord{int(tx), int(ty)};
+            Coord validDirections[4];
+            int validDirectionIndex[4];
+            int directionCount = GetValidDirs(coord, validDirections, validDirectionIndex, tileXCount, tileYCount);
+            for (int i = 0; i < directionCount; i++)
+            {
+                Coord neighbourCoord = coord;
+                neighbourCoord.x += validDirections[i].x;
+                neighbourCoord.y += validDirections[i].y;
+                TileIndex neighboorTileIndex = tileMap[neighbourCoord.y * tileXCount + neighbourCoord.x];
+                if (neighboorTileIndex == TileMask)
+                {
+                    continue;
+                }
+                tiles[tileIndex].compatibility[validDirectionIndex[i]][neighboorTileIndex] = true;
+            }
+        }
+    }
+    // check compatibility
+    printf("Checking compatibility ...\n");
+    for (size_t i = 0; i<tiles.size(); i++)
+    {
+        for (int direction = 0; direction < 4; direction++)
+        {
+            bool hasCompatible = tiles[i].HasCompatible(direction);
+            if (!hasCompatible)
+            {
+                printf("Tile %d has no compatibility for direction %d\n", int(i), direction);
+            }
+        }
+    }
+    printf("Done\n");
 
     stbi_image_free(data);
     return 0;
