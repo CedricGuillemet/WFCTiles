@@ -1,14 +1,16 @@
 #include <stdio.h>
-#include <unistd.h>
+//#include <unistd.h>
 #include <string>
 #include <vector>
 #include <map>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
-
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 typedef uint32_t Color;
 typedef uint32_t TileIndex;
+TileIndex TileMask{0xFFFFFFFF};
 
 struct Parameters
 {
@@ -19,7 +21,6 @@ struct Parameters
 struct Tile
 {
     std::vector<Color> bitmap;
-    //TileIndex tileIndex;
     
     uint64_t ComputeChecksum() const
     {
@@ -31,6 +32,17 @@ struct Tile
         return res;
     }
     
+    bool IsMask() const
+    {
+        for (size_t i = 0; i < bitmap.size(); i++)
+        {
+            if (bitmap[i] != 0xFFFF00FF)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
     bool operator == (const Tile& other) const
     {
         assert(bitmap.size() == other.bitmap.size());
@@ -67,6 +79,10 @@ TileIndex GetTileIndex(Color* colors, uint32_t offset, uint32_t pitch, const Par
 {
     Tile tile;
     tile.BuildFromMap(colors, offset, pitch, parameters);
+    if (tile.IsMask())
+    {
+        return TileMask;
+    }
     auto checkSum = tile.ComputeChecksum();
     
     auto iter = uniqueTiles.find(checkSum);
@@ -83,23 +99,28 @@ TileIndex GetTileIndex(Color* colors, uint32_t offset, uint32_t pitch, const Par
         }
     }
     // not found, add new
-    TileIndex res = tiles.size();
+    TileIndex res = static_cast<TileIndex>(tiles.size());
     tiles.push_back(tile);
     uniqueTiles[checkSum].push_back(res);
+    return res;
 }
+
+std::vector<TileIndex> tileMap;
 
 bool ParseParameters(int argc, char** argv, Parameters& parameters)
 {
     parameters.tileWidth = 16;
     parameters.tileHeight = 16;
-    
+#ifdef _MSC_VER
+    parameters.filename = "../maps/Zelda3LightOverworldBG_masked.png";
+#else
     char cwd[PATH_MAX];
     if (getcwd(cwd, sizeof(cwd)) != NULL)
     {
         printf("Current working dir: %s\n", cwd);
     }
-    
     parameters.filename = std::string(cwd) + "/../../maps/Zelda3LightOverworldBG_masked.png";
+#endif
     return true;
 }
 
@@ -119,6 +140,27 @@ int main(int argc, char** argv)
     {
         return 1;
     }
+    
+
+    // build tile map
+    const size_t tileXCount = x / parameters.tileWidth;
+    const size_t tileYCount = y / parameters.tileHeight;
+    tileMap.resize(tileXCount * tileYCount);
+
+    for (size_t ty = 0; ty < tileYCount; ty++)
+    {
+        for (size_t tx = 0; tx < tileYCount; tx++)
+        {
+            TileIndex tileIndex = GetTileIndex((Color*)data, (ty * parameters.tileHeight) * x + tx * parameters.tileWidth, x, parameters);
+            tileMap[ty * tileXCount + tx] = tileIndex;
+        }
+    }
+    printf("%d x %d source tiles with %d unique tiles\n", int(tileXCount), int(tileYCount), int(tiles.size()));
+    
+    stbi_write_png("tile 0.png", 16, 16, 4, tiles[0].bitmap.data(), 16 * 4);
+    stbi_write_png("tile 1516.png", 16, 16, 4, tiles[1516].bitmap.data(), 16 * 4);
+    stbi_write_png("tile 1517.png", 16, 16, 4, tiles[1517].bitmap.data(), 16 * 4);
+
     stbi_image_free(data);
     return 0;
 }
