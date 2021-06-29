@@ -158,6 +158,7 @@ int main(int argc, char** argv)
     printf("%d x %d source tiles with %d unique tiles\n", int(tileXCount), int(tileYCount), int(tiles.size()));
     
     stbi_write_png("tile 0.png", 16, 16, 4, tiles[0].bitmap.data(), 16 * 4);
+    stbi_write_png("tile 1.png", 16, 16, 4, tiles[1].bitmap.data(), 16 * 4);
     stbi_write_png("tile 1516.png", 16, 16, 4, tiles[1516].bitmap.data(), 16 * 4);
     stbi_write_png("tile 1517.png", 16, 16, 4, tiles[1517].bitmap.data(), 16 * 4);
 
