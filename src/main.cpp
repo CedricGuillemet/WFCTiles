@@ -194,8 +194,8 @@ bool ParseParameters(int argc, char** argv, Parameters& parameters)
     parameters.mapHeight = 16;
 
 #ifdef _MSC_VER
-    //parameters.filename = "../maps/Zelda3LightOverworldBG_masked.png";
-    parameters.filename = "../maps/Zelda3LightOverworldBG.png";
+    parameters.filename = "../maps/Zelda3LightOverworldBG_masked.png";
+    //parameters.filename = "../maps/Zelda3LightOverworldBG.png";
 #else
     char cwd[PATH_MAX];
     if (getcwd(cwd, sizeof(cwd)) != NULL)
@@ -305,7 +305,7 @@ bool TileCompatible(TileIndex tileIndex1, TileIndex tileIndex2, int direction)
     bool compatible = tiles.data()[tileIndex1].compatibility[direction][tileIndex2];
     return compatible;
 }
-
+Tile* tilesPtr;
 bool TileCompatibleFast(TileIndex tileIndex1, TileIndex tileIndex2, int direction)
 {
     //int key1 = mTiles[tileIndex1].mKeys[GetAngle(dir)];
@@ -313,7 +313,7 @@ bool TileCompatibleFast(TileIndex tileIndex1, TileIndex tileIndex2, int directio
 
     //return (key1 & key2) != 0;
     bool compatible = tiles[tileIndex1].compatibility[direction][tileIndex2];
-    return tiles.data()[tileIndex1].GetCompatibilityFast(direction, tileIndex2);
+    return tilesPtr[tileIndex1].GetCompatibilityFast(direction, tileIndex2);
 }
 
 
@@ -473,6 +473,7 @@ int main(int argc, char** argv)
     printf("%d x %d source tiles with %d unique tiles\n", int(tileXCount), int(tileYCount), int(tiles.size()));
     stbi_image_free(data);
     tilesSize = tiles.size();
+    tilesPtr = tiles.data();
     
     // resize compatibility list
     const size_t bitsNeeded = tiles.size() * 4;
@@ -542,7 +543,7 @@ int main(int argc, char** argv)
     mSumCoef.resize(mWidth * mHeight, tileCount);
     mTotalSum = mWidth * mHeight * tileCount;
 
-    srand(181);
+    srand(15581);
 
     auto startTime = std::chrono::high_resolution_clock::now();
     while (!IsFullyCollapsed())
