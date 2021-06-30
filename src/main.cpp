@@ -160,8 +160,8 @@ bool ParseParameters(int argc, char** argv, Parameters& parameters)
     parameters.tileWidth = 16;
     parameters.tileHeight = 16;
 
-    parameters.mapWidth = 4;
-    parameters.mapHeight = 4;
+    parameters.mapWidth = 16;
+    parameters.mapHeight = 16;
 
 #ifdef _MSC_VER
     //parameters.filename = "../maps/Zelda3LightOverworldBG_masked.png";
@@ -182,6 +182,21 @@ std::vector<bool> mCoef;
 std::vector<unsigned short> mSumCoef;
 unsigned int mTotalSum;
 int tileCount;
+
+int GetTileAtIndex(Coord coord)
+{
+    int idx = (coord.y * mWidth + coord.x) * tileCount;
+    int res = -1;
+    for (int i = 0; i < tileCount; i++)
+    {
+        if (mCoef[idx + i])
+        {
+            assert(res == -1);
+            res = i;
+        }
+    }
+    return res;
+}
 
 Coord GetMinEntropy()
 {
@@ -275,18 +290,62 @@ int GetPossibleTiles(Coord coord, int* possibleTiles)
     return res;
 }
 
+struct BumpAllocator
+{
+    BumpAllocator()
+    {
+        m_ptrSource = m_ptr = (uint8_t*)malloc(PageAllocation);
+        m_totalAllocated = 0;
+    }
+    
+    template<typename T> T* Allocate(size_t itemCount)
+    {
+        return (T*)DoAllocate(itemCount * sizeof(T));
+    }
+    
+    void* DoAllocate(size_t sizeInBytes)
+    {
+        m_totalAllocated += sizeInBytes;
+        assert(m_totalAllocated < PageAllocation);
+        void* res = m_ptr;
+        m_ptr += sizeInBytes;
+        return res;
+    }
+    
+    void Reset()
+    {
+        m_ptr = m_ptrSource;
+        m_totalAllocated = 0;
+    }
+    uint8_t* m_ptr;
+    uint8_t* m_ptrSource;
+    size_t m_totalAllocated;
+    static const size_t PageAllocation = 100 * 1024 * 1024;
+};
+
 void Propagate(Coord coord)
 {
     static std::vector<Coord> coords;
     coords.clear();
     coords.push_back(coord);
+    BumpAllocator bump;
+    int infoTick = 0;
     while (coords.size())
     {
+        infoTick ++;
+        if (infoTick >= 100)
+        {
+            printf("Remaining : %d\r", int(coords.size()));
+            infoTick = 0;
+        }
+        bump.Reset();
         Coord currentCoord = coords.back();
         coords.pop_back();
 
-        std::vector<int> curPossibleTiles(tileCount);
-        int curPossibleTileCount = GetPossibleTiles(currentCoord, curPossibleTiles.data());
+        //std::vector<int> curPossibleTiles(tileCount);
+        //int* curPossibleTiles = (int*)alloca(tileCount * sizeof(int));
+        int* curPossibleTiles = bump.Allocate<int>(tileCount);
+        int curPossibleTileCount = GetPossibleTiles(currentCoord, curPossibleTiles);
 
         Coord validDirs[4];
         int directions[4];
@@ -295,8 +354,10 @@ void Propagate(Coord coord)
         {
             Coord dir = validDirs[d];
             Coord otherCoord = { currentCoord.x + dir.x, currentCoord.y + dir.y };
-            std::vector<int> otherPossibleTiles(tileCount);
-            int otherPossibleTileCount = GetPossibleTiles(otherCoord, otherPossibleTiles.data());
+            //std::vector<int> otherPossibleTiles(tileCount);
+            //int* otherPossibleTiles = (int*)alloca(tileCount * sizeof(int));
+            int* otherPossibleTiles = bump.Allocate<int>(tileCount);
+            int otherPossibleTileCount = GetPossibleTiles(otherCoord, otherPossibleTiles);
             for (int otherTileIndex = 0; otherTileIndex < otherPossibleTileCount; otherTileIndex++)
             {
                 int otherTile = otherPossibleTiles[otherTileIndex];
@@ -312,6 +373,18 @@ void Propagate(Coord coord)
                     coords.push_back(otherCoord);
                 }
             }
+        }
+    }
+}
+
+void Blit(const Color* tileInput, Color* output, uint32_t offset, uint32_t pitch, uint16_t tileWidth, uint16_t tileHeight)
+{
+    for(size_t y = 0; y < tileHeight; y++)
+    {
+        for(size_t x = 0; x < tileWidth; x++)
+        {
+            Color* destination = output + pitch * y + offset + x;
+            *destination = *tileInput++;
         }
     }
 }
@@ -332,7 +405,6 @@ int main(int argc, char** argv)
     {
         return 1;
     }
-    
 
     // build tile map
     const uint32_t tileXCount = x / parameters.tileWidth;
@@ -349,13 +421,8 @@ int main(int argc, char** argv)
         }
     }
     printf("%d x %d source tiles with %d unique tiles\n", int(tileXCount), int(tileYCount), int(tiles.size()));
+    stbi_image_free(data);
     
-    /*
-    stbi_write_png("tile 0.png", 16, 16, 4, tiles[0].bitmap.data(), 16 * 4);
-    stbi_write_png("tile 1.png", 16, 16, 4, tiles[1].bitmap.data(), 16 * 4);
-    stbi_write_png("tile 1516.png", 16, 16, 4, tiles[1516].bitmap.data(), 16 * 4);
-    stbi_write_png("tile 1517.png", 16, 16, 4, tiles[1517].bitmap.data(), 16 * 4);
-     */
     // resize compatibility list
     for (auto& tile : tiles)
     {
@@ -364,6 +431,7 @@ int main(int argc, char** argv)
             compatibility.resize(tiles.size(), false);
         }
     }
+    
     // build compatibility
     for (size_t ty = 0; ty < tileYCount; ty++)
     {
@@ -392,6 +460,7 @@ int main(int argc, char** argv)
             }
         }
     }
+    
     // check compatibility
     printf("Checking compatibility ...\n");
     for (size_t i = 0; i<tiles.size(); i++)
@@ -408,7 +477,6 @@ int main(int argc, char** argv)
     printf("Done\n");
 
     // do it
-
     mWidth = parameters.mapWidth;
     mHeight = parameters.mapHeight;
     tileCount = int(tiles.size());
@@ -416,7 +484,7 @@ int main(int argc, char** argv)
     mSumCoef.resize(mWidth * mHeight, tileCount);
     mTotalSum = mWidth * mHeight * tileCount;
 
-    srand(18);
+    srand(181);
 
     while (!IsFullyCollapsed())
     {
@@ -425,9 +493,25 @@ int main(int argc, char** argv)
         Propagate(coord);
     }
 
-    // check image
+    // generate image
+    std::vector<Color> image(mWidth * parameters.tileWidth * mHeight * parameters.tileHeight);
+    
+    for(size_t ty = 0;ty<mHeight;ty++)
+    {
+        for(size_t tx = 0; tx < mWidth; tx++)
+        {
+            Coord coord{int32_t(tx), int32_t(ty)};
+            const auto tileIndex = GetTileAtIndex(coord);
+            const auto& tile = tiles[tileIndex];
+            const uint32_t offset = ty * parameters.tileHeight * mWidth * parameters.tileWidth + tx * parameters.tileWidth;
+            Blit(tile.bitmap.data(), image.data(), offset, mWidth * parameters.tileWidth, parameters.tileWidth, parameters.tileHeight);
+        }
+    }
+    
+    // save image
+    const auto imageWidth = mWidth * parameters.tileWidth;
+    int res = stbi_write_png("/Users/cedricguillemet/dev/WFCTiles/res.png", imageWidth, mHeight * parameters.tileHeight, 4,
+                             image.data(), imageWidth * 4);
 
-
-    stbi_image_free(data);
     return 0;
 }
