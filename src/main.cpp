@@ -9,6 +9,7 @@
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#include <chrono>
 
 typedef uint32_t Color;
 typedef uint32_t TileIndex;
@@ -23,7 +24,17 @@ struct Parameters
 
 struct Coord
 {
-    int32_t x, y;
+    union {
+        struct {
+            int32_t x, y;
+        };
+        uint64_t val;
+    };
+
+    const bool operator ==(const Coord& other) const
+    {
+        return val == other.val;
+    }
 };
 
 int GetValidDirs(Coord coord, Coord *dest, int* directions, uint32_t tileXCount, uint32_t tileYCount)
@@ -51,12 +62,31 @@ int GetValidDirs(Coord coord, Coord *dest, int* directions, uint32_t tileXCount,
     }
     return coordCount;
 }
-
+size_t tilesSize;
 struct Tile
 {
     std::vector<Color> bitmap;
     std::vector<bool> compatibility[4]; // +x, +y, -x, -y
-    
+    uint8_t* compatibilityFast;
+
+
+    void SetCompatibilityFast(size_t direction, size_t index)
+    {
+        size_t bitIndex = direction * tilesSize + index;
+        size_t byteIndex = bitIndex >> 3;
+        size_t bitInByte = bitIndex & 7;
+        compatibilityFast[byteIndex] |= 1 << bitInByte;
+    }
+
+    bool GetCompatibilityFast(size_t direction, size_t index)
+    {
+        size_t bitIndex = direction * tilesSize + index;
+        size_t byteIndex = bitIndex >> 3;
+        size_t bitInByte = bitIndex & 7;
+        return compatibilityFast[byteIndex] & (1 << bitInByte);
+    }
+
+
     bool HasCompatible(int direction) const
     {
         const auto& comp = compatibility[direction];
@@ -272,9 +302,20 @@ bool TileCompatible(TileIndex tileIndex1, TileIndex tileIndex2, int direction)
     //int key2 = mTiles[tileIndex2].mKeys[GetHook(dir)];
 
     //return (key1 & key2) != 0;
-    bool compatible = tiles[tileIndex1].compatibility[direction][tileIndex2];
+    bool compatible = tiles.data()[tileIndex1].compatibility[direction][tileIndex2];
     return compatible;
 }
+
+bool TileCompatibleFast(TileIndex tileIndex1, TileIndex tileIndex2, int direction)
+{
+    //int key1 = mTiles[tileIndex1].mKeys[GetAngle(dir)];
+    //int key2 = mTiles[tileIndex2].mKeys[GetHook(dir)];
+
+    //return (key1 & key2) != 0;
+    bool compatible = tiles[tileIndex1].compatibility[direction][tileIndex2];
+    return tiles.data()[tileIndex1].GetCompatibilityFast(direction, tileIndex2);
+}
+
 
 int GetPossibleTiles(Coord coord, int* possibleTiles)
 {
@@ -365,12 +406,21 @@ void Propagate(Coord coord)
                 for (int curTileIndex = 0; curTileIndex < curPossibleTileCount; curTileIndex++)
                 {
                     int curTile = curPossibleTiles[curTileIndex];
-                    tileCompatible |= TileCompatible(curTile, otherTile, directions[d]);
+                    tileCompatible |= TileCompatibleFast(curTile, otherTile, directions[d]);
+                    //tileCompatible |= TileCompatible(curTile, otherTile, directions[d]);
+                    if (tileCompatible)
+                    {
+                        break;
+                    }
                 }
                 if (!tileCompatible)
                 {
                     Constrain(otherCoord, otherTile);
-                    coords.push_back(otherCoord);
+                    auto iter = std::find(coords.begin(), coords.end(), otherCoord);
+                    if (iter == coords.end())
+                    {
+                        coords.push_back(otherCoord);
+                    }
                 }
             }
         }
@@ -422,14 +472,20 @@ int main(int argc, char** argv)
     }
     printf("%d x %d source tiles with %d unique tiles\n", int(tileXCount), int(tileYCount), int(tiles.size()));
     stbi_image_free(data);
+    tilesSize = tiles.size();
     
     // resize compatibility list
+    const size_t bitsNeeded = tiles.size() * 4;
+    const size_t bytesNeeded = bitsNeeded / 8 + 1;
     for (auto& tile : tiles)
     {
         for (auto& compatibility : tile.compatibility)
         {
             compatibility.resize(tiles.size(), false);
         }
+
+        tile.compatibilityFast = (uint8_t*)malloc(bytesNeeded);
+        memset(tile.compatibilityFast, 0, bytesNeeded);
     }
     
     // build compatibility
@@ -457,6 +513,8 @@ int main(int argc, char** argv)
                     continue;
                 }
                 tiles[tileIndex].compatibility[validDirectionIndex[i]][neighboorTileIndex] = true;
+                tiles[tileIndex].SetCompatibilityFast(validDirectionIndex[i], neighboorTileIndex);
+                
             }
         }
     }
@@ -486,12 +544,18 @@ int main(int argc, char** argv)
 
     srand(181);
 
+    auto startTime = std::chrono::high_resolution_clock::now();
     while (!IsFullyCollapsed())
     {
         Coord coord = GetMinEntropy();
         Collapse(coord);
         Propagate(coord);
     }
+    auto endTime = std::chrono::high_resolution_clock::now();
+    auto time_span = std::chrono::duration_cast<std::chrono::duration<double>>(endTime - startTime);
+
+    printf("Time for collapsing all: %2.4f seconds\n", float(time_span.count()));
+
 
     // generate image
     std::vector<Color> image(mWidth * parameters.tileWidth * mHeight * parameters.tileHeight);
@@ -510,8 +574,12 @@ int main(int argc, char** argv)
     
     // save image
     const auto imageWidth = mWidth * parameters.tileWidth;
+#ifdef _MSC_VER
+    int res = stbi_write_png("res.png", imageWidth, mHeight * parameters.tileHeight, 4,
+        image.data(), imageWidth * 4);
+#else
     int res = stbi_write_png("/Users/cedricguillemet/dev/WFCTiles/res.png", imageWidth, mHeight * parameters.tileHeight, 4,
                              image.data(), imageWidth * 4);
-
+#endif
     return 0;
 }
