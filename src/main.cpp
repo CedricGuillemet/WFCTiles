@@ -15,6 +15,8 @@ typedef uint32_t Color;
 typedef uint32_t TileIndex;
 TileIndex TileMask{0xFFFFFFFF};
 
+uint64_t qwordPerTiles{};
+
 struct Parameters
 {
     uint16_t tileWidth, tileHeight;
@@ -66,27 +68,31 @@ size_t tilesSize;
 struct Tile
 {
     std::vector<Color> bitmap;
-    std::vector<bool> compatibility[4]; // +x, +y, -x, -y
-    uint8_t* compatibilityFast;
+    //std::vector<bool> compatibility[4]; // +x, +y, -x, -y
+    uint64_t* compatibilityFast;
 
+    const uint64_t* GetCompatibilityCoefs(size_t direction) const
+    {
+        return &compatibilityFast[direction * qwordPerTiles];
+    }
 
     void SetCompatibilityFast(size_t direction, size_t index)
     {
-        size_t bitIndex = direction * tilesSize + index;
-        size_t byteIndex = bitIndex >> 3;
-        size_t bitInByte = bitIndex & 7;
-        compatibilityFast[byteIndex] |= 1 << bitInByte;
+        uint64_t bitIndex = direction * qwordPerTiles * 64ULL + index;
+        uint64_t byteIndex = bitIndex >> 6ULL;
+        uint64_t bitInByte = bitIndex & 63ULL;
+        compatibilityFast[byteIndex] |= 1ULL << bitInByte;
     }
 
-    bool GetCompatibilityFast(size_t direction, size_t index)
+    bool GetCompatibilityFast(size_t direction, size_t index) const
     {
-        size_t bitIndex = direction * tilesSize + index;
-        size_t byteIndex = bitIndex >> 3;
-        size_t bitInByte = bitIndex & 7;
-        return compatibilityFast[byteIndex] & (1 << bitInByte);
+        uint64_t bitIndex = direction * qwordPerTiles * 64ULL + index;
+        uint64_t byteIndex = bitIndex >> 6ULL;
+        uint64_t bitInByte = bitIndex & 63ULL;
+        return compatibilityFast[byteIndex] & (1ULL << bitInByte);
     }
 
-
+    /*
     bool HasCompatible(int direction) const
     {
         const auto& comp = compatibility[direction];
@@ -99,7 +105,7 @@ struct Tile
         }
         return false;
     }
-
+    */
     uint64_t ComputeChecksum() const
     {
         uint64_t res = 0;
@@ -190,8 +196,8 @@ bool ParseParameters(int argc, char** argv, Parameters& parameters)
     parameters.tileWidth = 16;
     parameters.tileHeight = 16;
 
-    parameters.mapWidth = 16;
-    parameters.mapHeight = 16;
+    parameters.mapWidth = 26;
+    parameters.mapHeight = 26;
 
 #ifdef _MSC_VER
     parameters.filename = "../maps/Zelda3LightOverworldBG_masked.png";
@@ -208,18 +214,48 @@ bool ParseParameters(int argc, char** argv, Parameters& parameters)
 }
 
 int mWidth, mHeight;
-std::vector<bool> mCoef;
+uint64_t* mCoefxx{};
+size_t coefQwordsPerTile;
 std::vector<unsigned short> mSumCoef;
 unsigned int mTotalSum;
 int tileCount;
 
+bool GetCoef(Coord coord, uint64_t index)
+{
+    const uint64_t bitIndex = (coord.y * mWidth + coord.x) * coefQwordsPerTile * 64 + index;
+    const uint64_t qwordIndex = bitIndex >> 6ULL;
+    const uint64_t bitInQword = bitIndex & 63ULL;
+    return mCoefxx[qwordIndex] & (1ULL << bitInQword);
+}
+
+uint64_t* GetCoefs(Coord coord)
+{
+    return &mCoefxx[(coord.y * mWidth + coord.x) * coefQwordsPerTile];
+}
+
+void SetCoef0(Coord coord, uint64_t index)
+{
+    const uint64_t bitIndex = (coord.y * mWidth + coord.x) * coefQwordsPerTile * 64 + index;
+    const uint64_t qwordIndex = bitIndex >> 6ULL;
+    const uint64_t bitInQword = bitIndex & 63ULL;
+    mCoefxx[qwordIndex] &= ~(1ULL << bitInQword);
+}
+
+void SetCoef1(Coord coord, uint64_t index)
+{
+    const uint64_t bitIndex = (coord.y * mWidth + coord.x) * coefQwordsPerTile * 64 + index;
+    const uint64_t qwordIndex = bitIndex >> 6ULL;
+    const uint64_t bitInQword = bitIndex & 63ULL;
+    mCoefxx[qwordIndex] |= (1ULL << bitInQword);
+}
+
 int GetTileAtIndex(Coord coord)
 {
-    int idx = (coord.y * mWidth + coord.x) * tileCount;
     int res = -1;
     for (int i = 0; i < tileCount; i++)
     {
-        if (mCoef[idx + i])
+        //if (mCoef[idx + i])
+        if (GetCoef(coord, i))
         {
             assert(res == -1);
             res = i;
@@ -254,14 +290,19 @@ Coord GetMinEntropy()
 }
 void Collapse(Coord coord, int tileIndex)
 {
-    int idx = (coord.y * mWidth + coord.x) * tileCount;
-    for (int i = 0; i < tileCount; i++)
+    //int idx = (coord.y * mWidth + coord.x) * tileCount;
+    for (uint64_t i = 0; i < tileCount; i++)
     {
-        if (mCoef[idx + i])
+        //if (mCoef[idx + i])
+        if (GetCoef(coord, i))
+        {
             mTotalSum--;
-        mCoef[idx + i] = 0;
+        }
+        //mCoef[idx + i] = 0;
+        SetCoef0(coord, i);
     }
-    mCoef[idx + tileIndex] = 1;
+    //mCoef[idx + tileIndex] = 1;
+    SetCoef1(coord, tileIndex);
     mTotalSum++;
     mSumCoef[coord.y * mWidth + coord.x] = 1;
 }
@@ -269,13 +310,16 @@ void Collapse(Coord coord)
 {
     int *potentials = new int [tileCount];
     int potentialIndex = 0;
-    int idx = (coord.y * mWidth + coord.x) * tileCount;
+    //int idx = (coord.y * mWidth + coord.x) * tileCount;
     //auto & v = mCoef[coord.y * mWidth + coord.x];
     int cnt = 0;
-    for (int i = 0; i < tileCount; i++)
+    for (uint64_t i = 0; i < tileCount; i++)
     {
-        if (mCoef[idx + i])
-            potentials[potentialIndex++] = i;
+        //if (mCoef[idx + i])
+        if (GetCoef(coord, i))
+        {
+            potentials[potentialIndex++] = int(i);
+        }
     }
     assert(potentialIndex);
     static int rd = 0;
@@ -289,43 +333,38 @@ bool IsFullyCollapsed()
 }
 void Constrain(Coord coord, int tileIndex)
 {
-    int idx = (coord.y * mWidth + coord.x) * tileCount;
+    //int idx = (coord.y * mWidth + coord.x) * tileCount;
     //auto & v = mCoef[coord.y * mWidth + coord.x];
-    assert(mCoef[idx + tileIndex]);
-    mCoef[idx + tileIndex] = 0;
+    //assert(mCoef[idx + tileIndex]);
+    //mCoef[idx + tileIndex] = 0;
+    assert(GetCoef(coord, tileIndex));
+    SetCoef0(coord, tileIndex);
     mSumCoef[coord.y * mWidth + coord.x] --;
     mTotalSum--;
 }
-bool TileCompatible(TileIndex tileIndex1, TileIndex tileIndex2, int direction)
+
+bool TileCompatibleFast(const Tile& tile1, TileIndex tileIndex2, int direction)
 {
     //int key1 = mTiles[tileIndex1].mKeys[GetAngle(dir)];
     //int key2 = mTiles[tileIndex2].mKeys[GetHook(dir)];
 
     //return (key1 & key2) != 0;
-    bool compatible = tiles.data()[tileIndex1].compatibility[direction][tileIndex2];
-    return compatible;
-}
-Tile* tilesPtr;
-bool TileCompatibleFast(TileIndex tileIndex1, TileIndex tileIndex2, int direction)
-{
-    //int key1 = mTiles[tileIndex1].mKeys[GetAngle(dir)];
-    //int key2 = mTiles[tileIndex2].mKeys[GetHook(dir)];
-
-    //return (key1 & key2) != 0;
-    bool compatible = tiles[tileIndex1].compatibility[direction][tileIndex2];
-    return tilesPtr[tileIndex1].GetCompatibilityFast(direction, tileIndex2);
+    return tile1.GetCompatibilityFast(direction, tileIndex2);
 }
 
 
 int GetPossibleTiles(Coord coord, int* possibleTiles)
 {
     int res = 0;
-    int idx = (coord.y * mWidth + coord.x) * tileCount;
+    //int idx = (coord.y * mWidth + coord.x) * tileCount;
     //auto & v = mCoef[coord.y * mWidth + coord.x];
     for (int i = 0; i < tileCount; i++)
     {
-        if (mCoef[idx + i])
+        //if (mCoef[idx + i])
+        if (GetCoef(coord, i))
+        {
             possibleTiles[res++] = i;
+        }
     }
     assert(res);
     return res;
@@ -369,62 +408,64 @@ void Propagate(Coord coord)
     static std::vector<Coord> coords;
     coords.clear();
     coords.push_back(coord);
-    BumpAllocator bump;
+    static BumpAllocator bump;
     int infoTick = 0;
     while (coords.size())
     {
         infoTick ++;
-        if (infoTick >= 100)
+        if (infoTick >= 1000)
         {
-            printf("Remaining : %d\r", int(coords.size()));
+            printf("Remaining : %d Entropy : %d     \r", int(coords.size()), int(mTotalSum));
             infoTick = 0;
         }
         bump.Reset();
         Coord currentCoord = coords.back();
         coords.pop_back();
 
-        //std::vector<int> curPossibleTiles(tileCount);
-        //int* curPossibleTiles = (int*)alloca(tileCount * sizeof(int));
         int* curPossibleTiles = bump.Allocate<int>(tileCount);
         int curPossibleTileCount = GetPossibleTiles(currentCoord, curPossibleTiles);
-
+        uint64_t* currentCoefs = GetCoefs(currentCoord);
         Coord validDirs[4];
         int directions[4];
         int validDirCount = GetValidDirs(currentCoord, validDirs, directions, mWidth, mHeight);
         for (int d = 0; d < validDirCount; d++)
         {
+            static const int inverser[4] = { 2,3,0,1 };
+            const auto inversedDir = inverser[directions[d]];
             Coord dir = validDirs[d];
             Coord otherCoord = { currentCoord.x + dir.x, currentCoord.y + dir.y };
-            //std::vector<int> otherPossibleTiles(tileCount);
-            //int* otherPossibleTiles = (int*)alloca(tileCount * sizeof(int));
             int* otherPossibleTiles = bump.Allocate<int>(tileCount);
             int otherPossibleTileCount = GetPossibleTiles(otherCoord, otherPossibleTiles);
             for (int otherTileIndex = 0; otherTileIndex < otherPossibleTileCount; otherTileIndex++)
             {
                 int otherTile = otherPossibleTiles[otherTileIndex];
+                const Tile& tile1 = tiles[otherTile];
+                const uint64_t* otherCoefs = tile1.GetCompatibilityCoefs(inversedDir);
                 bool tileCompatible = false;
-                for (int curTileIndex = 0; curTileIndex < curPossibleTileCount; curTileIndex++)
+
+                for (size_t batch = 0; batch < qwordPerTiles; batch++)
                 {
-                    int curTile = curPossibleTiles[curTileIndex];
-                    tileCompatible |= TileCompatibleFast(curTile, otherTile, directions[d]);
-                    //tileCompatible |= TileCompatible(curTile, otherTile, directions[d]);
-                    if (tileCompatible)
+                    if (otherCoefs[batch] & currentCoefs[batch])
                     {
+                        tileCompatible = true;
                         break;
                     }
                 }
                 if (!tileCompatible)
                 {
                     Constrain(otherCoord, otherTile);
-                    auto iter = std::find(coords.begin(), coords.end(), otherCoord);
-                    if (iter == coords.end())
                     {
-                        coords.push_back(otherCoord);
+                        auto iter = std::find(coords.begin(), coords.end(), otherCoord);
+                        if (iter == coords.end())
+                        {
+                            coords.push_back(otherCoord);
+                        }
                     }
                 }
             }
         }
     }
+    //printf("\nMax bump %d\n", int(bump.m_totalAllocated));
 }
 
 void Blit(const Color* tileInput, Color* output, uint32_t offset, uint32_t pitch, uint16_t tileWidth, uint16_t tileHeight)
@@ -473,20 +514,16 @@ int main(int argc, char** argv)
     printf("%d x %d source tiles with %d unique tiles\n", int(tileXCount), int(tileYCount), int(tiles.size()));
     stbi_image_free(data);
     tilesSize = tiles.size();
-    tilesPtr = tiles.data();
+    //tilesPtr = tiles.data();
     
     // resize compatibility list
-    const size_t bitsNeeded = tiles.size() * 4;
-    const size_t bytesNeeded = bitsNeeded / 8 + 1;
+    qwordPerTiles = (tiles.size() + 63ULL) >> 6ULL;
+    const uint64_t qwordPerTilesAllDirections = qwordPerTiles * 4ULL;
+    const uint64_t qwordPerTilesAllDirectionsInBytes = qwordPerTilesAllDirections * sizeof(uint64_t);
     for (auto& tile : tiles)
     {
-        for (auto& compatibility : tile.compatibility)
-        {
-            compatibility.resize(tiles.size(), false);
-        }
-
-        tile.compatibilityFast = (uint8_t*)malloc(bytesNeeded);
-        memset(tile.compatibilityFast, 0, bytesNeeded);
+        tile.compatibilityFast = (uint64_t*)malloc(qwordPerTilesAllDirectionsInBytes);
+        memset(tile.compatibilityFast, 0, qwordPerTilesAllDirectionsInBytes);
     }
     
     // build compatibility
@@ -513,7 +550,7 @@ int main(int argc, char** argv)
                 {
                     continue;
                 }
-                tiles[tileIndex].compatibility[validDirectionIndex[i]][neighboorTileIndex] = true;
+                //tiles[tileIndex].compatibility[validDirectionIndex[i]][neighboorTileIndex] = true;
                 tiles[tileIndex].SetCompatibilityFast(validDirectionIndex[i], neighboorTileIndex);
                 
             }
@@ -521,6 +558,7 @@ int main(int argc, char** argv)
     }
     
     // check compatibility
+    /*
     printf("Checking compatibility ...\n");
     for (size_t i = 0; i<tiles.size(); i++)
     {
@@ -534,53 +572,79 @@ int main(int argc, char** argv)
         }
     }
     printf("Done\n");
-
+    */
     // do it
     mWidth = parameters.mapWidth;
     mHeight = parameters.mapHeight;
     tileCount = int(tiles.size());
-    mCoef.resize(mWidth * mHeight * tileCount, true);
-    mSumCoef.resize(mWidth * mHeight, tileCount);
-    mTotalSum = mWidth * mHeight * tileCount;
 
-    srand(15581);
+    const size_t coefBitsPerTile = (tileCount + 64) & (~63);
+    coefQwordsPerTile = coefBitsPerTile >> 6;
+    const size_t totalQWords = mWidth * mHeight * coefQwordsPerTile;
+    const size_t coefTotalBytes = totalQWords * sizeof(uint64_t);
+    //mCoef.resize(mWidth * mHeight * tileCount, true);
+    mCoefxx = (uint64_t*)malloc(coefTotalBytes);
 
-    auto startTime = std::chrono::high_resolution_clock::now();
-    while (!IsFullyCollapsed())
+
+    for (int mapIndex = 0; mapIndex < 10; mapIndex++)
     {
-        Coord coord = GetMinEntropy();
-        Collapse(coord);
-        Propagate(coord);
-    }
-    auto endTime = std::chrono::high_resolution_clock::now();
-    auto time_span = std::chrono::duration_cast<std::chrono::duration<double>>(endTime - startTime);
 
-    printf("Time for collapsing all: %2.4f seconds\n", float(time_span.count()));
-
-
-    // generate image
-    std::vector<Color> image(mWidth * parameters.tileWidth * mHeight * parameters.tileHeight);
-    
-    for(size_t ty = 0;ty<mHeight;ty++)
-    {
-        for(size_t tx = 0; tx < mWidth; tx++)
+        for (size_t i = 0; i < totalQWords; i++)
         {
-            Coord coord{int32_t(tx), int32_t(ty)};
-            const auto tileIndex = GetTileAtIndex(coord);
-            const auto& tile = tiles[tileIndex];
-            const uint32_t offset = ty * parameters.tileHeight * mWidth * parameters.tileWidth + tx * parameters.tileWidth;
-            Blit(tile.bitmap.data(), image.data(), offset, mWidth * parameters.tileWidth, parameters.tileWidth, parameters.tileHeight);
+            mCoefxx[i] = 0xFFFFFFFFFFFFFFFFULL;
+        }
+        mSumCoef.clear();
+        mSumCoef.resize(mWidth * mHeight, tileCount);
+        mTotalSum = mWidth * mHeight * tileCount;
+
+        srand(7888 + mapIndex);
+
+        try
+        {
+            auto startTime = std::chrono::high_resolution_clock::now();
+            while (!IsFullyCollapsed())
+            {
+                Coord coord = GetMinEntropy();
+                Collapse(coord);
+                Propagate(coord);
+            }
+            auto endTime = std::chrono::high_resolution_clock::now();
+            auto time_span = std::chrono::duration_cast<std::chrono::duration<double>>(endTime - startTime);
+
+            printf("Time for collapsing all: %2.4f seconds\n", float(time_span.count()));
+
+
+            // generate image
+            std::vector<Color> image(mWidth * parameters.tileWidth * mHeight * parameters.tileHeight);
+
+            for (size_t ty = 0; ty < mHeight; ty++)
+            {
+                for (size_t tx = 0; tx < mWidth; tx++)
+                {
+                    Coord coord{ int32_t(tx), int32_t(ty) };
+                    const auto tileIndex = GetTileAtIndex(coord);
+                    const auto& tile = tiles[tileIndex];
+                    const uint32_t offset = uint32_t(ty * parameters.tileHeight * mWidth * parameters.tileWidth + tx * parameters.tileWidth);
+                    Blit(tile.bitmap.data(), image.data(), offset, mWidth * parameters.tileWidth, parameters.tileWidth, parameters.tileHeight);
+                }
+            }
+
+            // save image
+            const auto imageWidth = mWidth * parameters.tileWidth;
+            char mapFilename[512];
+            sprintf(mapFilename, "MapGen_%d.png", mapIndex);
+#ifdef _MSC_VER
+            int res = stbi_write_png(mapFilename, imageWidth, mHeight * parameters.tileHeight, 4,
+                image.data(), imageWidth * 4);
+#else
+            int res = stbi_write_png("/Users/cedricguillemet/dev/WFCTiles/res.png", imageWidth, mHeight * parameters.tileHeight, 4,
+                image.data(), imageWidth * 4);
+#endif
+        }
+        catch(...)
+        {
+            printf("Failing at generating %d\n", mapIndex);
         }
     }
-    
-    // save image
-    const auto imageWidth = mWidth * parameters.tileWidth;
-#ifdef _MSC_VER
-    int res = stbi_write_png("res.png", imageWidth, mHeight * parameters.tileHeight, 4,
-        image.data(), imageWidth * 4);
-#else
-    int res = stbi_write_png("/Users/cedricguillemet/dev/WFCTiles/res.png", imageWidth, mHeight * parameters.tileHeight, 4,
-                             image.data(), imageWidth * 4);
-#endif
     return 0;
 }
